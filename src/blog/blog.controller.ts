@@ -1,11 +1,11 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
   Post,
-  Body,
-  Delete,
 } from '@nestjs/common';
 import { BlogService } from './blog.service';
 import { CreatePostDto } from './dto/create-post.dto';
@@ -30,7 +30,9 @@ export class BlogController {
   }
 
   @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.blogService.remove(id);
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    await this.blogService.remove(id);
+    return { ok: true };
   }
 }
+

@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1767530215157,
+      "tag": "0000_yellow_sasquatch",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1767531203796,
+      "tag": "0001_sharp_orphan",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1767532865117,
+      "tag": "0002_abandoned_chamber",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1767532979586,
+      "tag": "0003_lyrical_squadron_supreme",
+      "breakpoints": true
+    }
+  ]
+}

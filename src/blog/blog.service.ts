@@ -1,31 +1,40 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Post } from './entities/post.entity';
-import { Repository } from 'typeorm';
+import { Inject, Injectable } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
+import { DB } from '../database/database.module';
+import { posts } from '../database/schema';
 import { CreatePostDto } from './dto/create-post.dto';
 
 @Injectable()
 export class BlogService {
-  constructor(
-    @InjectRepository(Post)
-    private postRepository: Repository<Post>,
-  ) {}
+  constructor(@Inject(DB) private readonly db: any) {}
 
-  findAll(): Promise<Post[]> {
-    return this.postRepository.find();
+  findAll() {
+    return this.db.select().from(posts);
   }
 
-  findOne(id: number): Promise<Post | null> {
-    return this.postRepository.findOneBy({ id });
+  async findOne(id: number) {
+    const rows = await this.db
+      .select()
+      .from(posts)
+      .where(eq(posts.id, id))
+      .limit(1);
+
+    return rows[0] ?? null;
   }
 
   async remove(id: number): Promise<void> {
-    await this.postRepository.delete(id);
+    await this.db.delete(posts).where(eq(posts.id, id));
   }
 
-  async create(dto: CreatePostDto): Promise<Post> {
-    const post = this.postRepository.create(dto);
+  async create(dto: CreatePostDto) {
+    const rows = await this.db
+      .insert(posts)
+      .values({
+        title: dto.title,
+        content: dto.content,
+      })
+      .returning();
 
-    return this.postRepository.save(post);
+    return rows[0];
   }
 }
