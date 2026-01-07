@@ -1,7 +1,12 @@
 import { Start, Update, On, Ctx } from 'nestjs-telegraf';
+import { IngestionService } from 'src/domains/ingestion/ingestion.service';
+import { Logger } from '@nestjs/common';
 
+const logger = new Logger('bot update');
 @Update()
 export class BotUpdate {
+  constructor(private readonly ingestionService: IngestionService) {}
+
   @Start()
   firstStart(@Ctx() ctx) {
     ctx.reply('Привет! Чтобы увидеть все команды напишите "меню"');
@@ -17,15 +22,25 @@ export class BotUpdate {
 
     if (addedMe) {
       const chatId = ctx.chat.id;
-      console.log('Бота добавили в группу:', chatId);
+      logger.log('Бота добавили в группу:', chatId);
 
       await ctx.reply('Привет, я в группе 👋');
     }
   }
 
   @On('message')
-  onAnyMessage(@Ctx() ctx) {
-    console.log('message update:', ctx.update);
+  async onAnyMessage(@Ctx() ctx) {
+    const msg = ctx.message;
+    if (!msg) return;
+    logger.log(msg);
+
+    await this.ingestionService.ingestTelegramMessage({
+      chatId: String(msg.chat.id),
+      userId: msg.from?.id ? String(msg.from.id) : null,
+      text: msg.text,
+      messageId: String(msg.message_id),
+      ts: msg.date ? msg.date * 1000 : Date.now(),
+    });
   }
 
   @On('text')
