@@ -5,24 +5,46 @@ import type { LlmPort } from 'src/domains/summarization/llm.port';
 import type { BufferedMessage } from 'src/domains/ingestion/message-buffer.port';
 
 @Injectable()
-export class OpenAiLlm implements LlmPort {
+export class OpenRouterLlm implements LlmPort {
   private readonly client: OpenAI;
   private readonly model: string;
-  private readonly logger = new Logger(OpenAiLlm.name);
+  private readonly logger = new Logger(OpenRouterLlm.name);
 
   constructor() {
-    const apiKey = process.env.OPENAI_API_KEY || process.env.OPEN_API_KEY;
+    // OpenRouter exposes an OpenAI-compatible API.
+    // Base URL: https://openrouter.ai/api/v1
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      throw new Error('OpenAI API key not found. Set OPENAI_API_KEY.');
+      throw new Error(
+        'OpenRouter API key not found. Set OPENROUTER_API_KEY (preferred).',
+      );
     }
+
+    const baseURL =
+      process.env.OPENROUTER_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      'https://openrouter.ai/api/v1';
+
+    // Optional but recommended by OpenRouter.
+    const referer = process.env.OPENROUTER_HTTP_REFERER;
+    const title = process.env.OPENROUTER_X_TITLE;
 
     this.client = new OpenAI({
       apiKey,
+      baseURL,
       timeout: 30_000,
       maxRetries: 2,
+      defaultHeaders: {
+        ...(referer ? { 'HTTP-Referer': referer } : {}),
+        ...(title ? { 'X-Title': title } : {}),
+      },
     });
 
-    this.model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+    // OpenRouter model naming is usually "provider/model"
+    this.model =
+      process.env.OPENROUTER_MODEL ||
+      process.env.OPENAI_MODEL ||
+      'mistralai/mistral-7b-instruct';
   }
 
   async summarize(
@@ -52,19 +74,26 @@ export class OpenAiLlm implements LlmPort {
     );
 
     try {
-      const instructions =
+      const system =
+        'Ты — помощник для суммаризации диалогов. ' +
         'Сделай краткую суммаризацию диалога на русском языке. ' +
         'Формат: 5–10 буллетов и одна строка "Итог". ' +
         'Не выдумывай факты и не добавляй ничего от себя.';
 
-      const response = await this.client.responses.create({
+      const response = await this.client.chat.completions.create({
         model: this.model,
-        instructions,
-        input: `chatId=${chatId}\n\nСообщения:\n${lines}`,
-        max_output_tokens: 400,
+        messages: [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content: `chatId=${chatId}\n\nСообщения:\n${lines}`,
+          },
+        ],
+        max_tokens: 400,
+        temperature: 0.2,
       });
 
-      const out = (response.output_text ?? '').trim();
+      const out = (response.choices?.[0]?.message?.content ?? '').trim();
       this.logger.log(
         `summarize:done chatId=${chatId} ms=${Date.now() - startedAt} outLen=${out.length}`,
       );

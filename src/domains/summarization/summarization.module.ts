@@ -9,7 +9,7 @@ import { PostgresMessageBuffer } from 'src/infrastructure/database/postgres/post
 
 import { LLM } from '../summarization/summarization.token';
 // временная заглушка — заменишь на реальный openai-gateway
-import { OpenAiLlm } from '../../infrastructure/llm/openai-llm';
+import { OpenRouterLlm } from '../../infrastructure/llm/OpenRouterLlm';
 
 @Module({
   imports: [DatabaseModule],
@@ -21,7 +21,7 @@ import { OpenAiLlm } from '../../infrastructure/llm/openai-llm';
     { provide: MESSAGE_BUFFER, useClass: PostgresMessageBuffer },
 
     // llm
-    { provide: LLM, useClass: OpenAiLlm },
+    { provide: LLM, useClass: OpenRouterLlm },
   ],
   exports: [SummarizationService],
 })
