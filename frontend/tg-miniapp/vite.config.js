@@ -9,7 +9,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     allowedHosts: [
-      '.ngrok-free.dev', // разрешаем все ngrok-free домены
+      '.ngrok-free.dev',
+      '.trycloudflare.com',
     ],
   },
 })

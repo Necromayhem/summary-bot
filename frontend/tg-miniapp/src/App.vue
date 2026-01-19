@@ -4,21 +4,21 @@ import { ref } from 'vue';
 const summary = ref<string>('');
 const loading = ref(false);
 const error = ref<string>('');
+const chatIdRef = ref<string>('');
 
 // Telegram WebApp
 const tg = (window as any).Telegram?.WebApp;
 
-// получаем chatId из Telegram
+// 1) сначала берём chatId из query (?chatId=...)
+// 2) только если его нет — пробуем tg.initDataUnsafe.chat.id
+// ВАЖНО: НЕ делаем fallback на unsafe.user.id (это не chatId)
 function getChatId(): string | null {
-  const unsafe = tg?.initDataUnsafe;
-  if (!unsafe) return null;
+  const fromQuery = new URLSearchParams(location.search).get('chatId');
+  if (fromQuery && fromQuery.trim()) return fromQuery.trim();
 
-  // в личных чатах часто нет chat, поэтому fallback на user
-  return (
-    unsafe.chat?.id?.toString() ??
-    unsafe.user?.id?.toString() ??
-    null
-  );
+  const unsafe = tg?.initDataUnsafe;
+  const fromTg = unsafe?.chat?.id?.toString();
+  return fromTg?.trim() ? fromTg.trim() : null;
 }
 
 async function loadLatestSummary() {
@@ -28,17 +28,17 @@ async function loadLatestSummary() {
 
   try {
     const chatId = getChatId();
-    if (!chatId) {
-      throw new Error('chatId not found');
-    }
+    if (!chatId) throw new Error('chatId not found');
 
-    const res = await fetch(
-      `${import.meta.env.VITE_API_BASE_URL}/summaries/latest?chatId=${chatId}`,
-    );
+    chatIdRef.value = chatId;
+    console.log('[MiniApp] chatId:', chatId);
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    const baseUrl = `${import.meta.env.VITE_API_BASE_URL}`.replace(/\/+$/, '');
+    const url = `${baseUrl}/summaries/latest?chatId=${encodeURIComponent(chatId)}`;
+    console.log('[MiniApp] API URL:', url);
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
     summary.value = data.summary || 'Пока нет суммаризации';
@@ -55,6 +55,10 @@ async function loadLatestSummary() {
     <button @click="loadLatestSummary" :disabled="loading">
       {{ loading ? 'Загружаю…' : 'Получить последнюю суммаризацию' }}
     </button>
+
+    <p v-if="chatIdRef">
+      <strong>chatId:</strong> {{ chatIdRef }}
+    </p>
 
     <p v-if="error" class="error">
       {{ error }}
@@ -90,3 +94,5 @@ button {
   color: red;
 }
 </style>
+
+
