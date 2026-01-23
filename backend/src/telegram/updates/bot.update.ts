@@ -12,6 +12,45 @@ export class BotUpdate {
     private readonly telegramChats: TelegramChatsService,
   ) {}
 
+  async onStart(@Ctx() ctx) {
+    const baseUrl = process.env.TG_MINIAPP_URL;
+    if (!baseUrl) return ctx.reply('TG_MINIAPP_URL не задан в .env');
+
+    const cleanBase = String(baseUrl).replace(/\/+$/, '');
+    const openUrl = `${cleanBase}?source=start`;
+
+    const botUsername = (
+      ctx.botInfo?.username ||
+      process.env.BOT_USERNAME ||
+      ''
+    )
+      .replace(/^@/, '')
+      .trim();
+    const addToGroupUrl = botUsername
+      ? `https://t.me/${botUsername}?startgroup=true`
+      : undefined;
+
+    const isPrivate = ctx.chat?.type === 'private';
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          isPrivate
+            ? { text: '📁 Мои группы', web_app: { url: openUrl } }
+            : {
+                text: '📁 Открыть Mini App',
+                url: `https://t.me/${botUsername}`,
+              }, // или openUrl как обычный url
+        ],
+        ...(addToGroupUrl
+          ? [[{ text: '➕ Добавить бота в групповой чат', url: addToGroupUrl }]]
+          : []),
+      ],
+    };
+
+    await ctx.reply('...', { reply_markup: keyboard, parse_mode: 'HTML' });
+  }
+
   @Command('app')
   async openApp(@Ctx() ctx) {
     const baseUrl = process.env.TG_MINIAPP_URL;
@@ -21,7 +60,7 @@ export class BotUpdate {
     if (!chatId) return ctx.reply('Не удалось определить chatId');
 
     const cleanBase = String(baseUrl).replace(/\/+$/, '');
-    const url = `${cleanBase}?chatId=${encodeURIComponent(String(chatId))}`;
+    const url = `${cleanBase}?source=chat&chatId=${encodeURIComponent(String(chatId))}`;
 
     await ctx.reply('Открыть интерфейс:', {
       reply_markup: {
@@ -30,52 +69,29 @@ export class BotUpdate {
     });
   }
 
-  @Start()
-  async firstStart(@Ctx() ctx) {
-    await ctx.reply('Привет! Чтобы увидеть все команды напишите "меню"');
-  }
-
-  /**
-   * ✅ ГЛАВНЫЙ хук: Telegram сообщает, что статус *БОТА* в чате изменился.
-   * member/administrator -> бота добавили / вернули
-   * left/kicked -> бота удалили / заблокировали
-   */
   @On('my_chat_member')
   async onMyChatMember(@Ctx() ctx) {
     const upd = (ctx.update as any)?.my_chat_member;
     if (!upd) return;
 
     const chat = upd.chat;
-    const chatId = String(chat.id);
-
     const newStatus: string | undefined = upd?.new_chat_member?.status;
-    const oldStatus: string | undefined = upd?.old_chat_member?.status;
 
-    logger.log(`my_chat_member: chat=${chatId} ${oldStatus} -> ${newStatus}`);
-
-    // Бота удалили / заблокировали
-    if (newStatus === 'left' || newStatus === 'kicked') {
-      await this.telegramChats.markInactive(chatId);
-      logger.log(`chat deactivated: ${chatId} status=${newStatus}`);
-      return;
-    }
-
-    // Бота добавили / назначили админом / восстановили
     if (newStatus === 'member' || newStatus === 'administrator') {
       await this.telegramChats.upsertChat({
-        chatId,
+        chatId: String(chat.id),
         type: chat.type ?? 'unknown',
         title: chat.title ?? null,
       });
-      logger.log(`chat registered/activated: ${chatId} status=${newStatus}`);
-      return;
+      logger.log(`chat registered: ${chat.id} status=${newStatus}`);
+    }
+
+    if (newStatus === 'left' || newStatus === 'kicked') {
+      await this.telegramChats.markInactive(String(chat.id));
+      logger.log(`chat deactivated: ${chat.id} status=${newStatus}`);
     }
   }
 
-  /**
-   * Fallback: иногда добавление приходит как new_chat_members
-   * (можно оставить как запасной вариант)
-   */
   @On('new_chat_members')
   async onNewMembers(@Ctx() ctx) {
     const members = (ctx.message as any)?.new_chat_members ?? [];
@@ -105,7 +121,7 @@ export class BotUpdate {
 
     const chatId = String(msg.chat.id);
 
-    // поддерживаем lastSeenAt
+    // touch чтобы чат был “живой”
     await this.telegramChats.touch(chatId);
 
     const text: string | undefined =
@@ -121,11 +137,6 @@ export class BotUpdate {
     });
   }
 
-  /**
-   * ⚠️ left_chat_member НЕ гарантирован при кике бота админом,
-   * поэтому не полагаемся на него.
-   * Оставить можно, но он не должен быть единственным способом.
-   */
   @On('left_chat_member')
   async onLeftMember(@Ctx() ctx) {
     const msg = ctx.message as any;

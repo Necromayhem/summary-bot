@@ -9,11 +9,14 @@ import { BotUpdate } from './updates/bot.update';
 import { TelegramChatsService } from './telegram-chats.service';
 import { TelegramChatsController } from './telegram-chats.controller';
 
+import { TelegramUiModule } from './ui/telegram-ui.module';
+
 @Module({
   imports: [
     ConfigModule,
     TelegramAuthModule, // только сервис верификации Telegram
     IngestionModule,
+    TelegramUiModule,
     TelegrafModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
