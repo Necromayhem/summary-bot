@@ -13,16 +13,20 @@ export interface BufferedMessage extends BufferMessage {
 
 export interface MessageBufferPort {
   append(chatId: string, msg: BufferMessage): Promise<void>;
-
-  // вернуть сообщения по порядку
   getBatch(chatId: string, limit?: number): Promise<BufferedMessage[]>;
-
-  // удалить все (может пригодиться админке/тестам)
+  getForPeriod(params: {
+    chatId: string;
+    fromTsMs: number;
+    toTsMs: number;
+    maxChars: number;
+  }): Promise<BufferedMessage[]>;
+  // ✅ NEW
+  getLastByChars(params: {
+    chatId: string;
+    maxChars: number; // например 10_000
+    maxRows?: number; // страховка, например 2000
+  }): Promise<BufferedMessage[]>;
   clear(chatId: string): Promise<void>;
-
-  // удалить только то, что обработали
   clearUpTo(chatId: string, maxBufferId: number): Promise<void>;
-
-  // сколько сейчас в буфере
   count(chatId: string): Promise<number>;
 }

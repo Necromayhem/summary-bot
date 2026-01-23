@@ -1,5 +1,5 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { eq, asc, and, lte, sql } from 'drizzle-orm';
+import { eq, asc, and, lte, sql, desc, gte } from 'drizzle-orm';
 import { DB } from 'src/database/database.module';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
@@ -72,5 +72,90 @@ export class PostgresMessageBuffer implements MessageBufferPort {
       .where(eq(bufferedMessages.chatId, chatId));
 
     return Number(rows[0]?.c ?? 0);
+  }
+
+  async getForPeriod(params: {
+    chatId: string;
+    fromTsMs: number;
+    toTsMs: number;
+    maxChars: number;
+  }): Promise<BufferedMessage[]> {
+    const { chatId, fromTsMs, toTsMs, maxChars } = params;
+
+    // Берём с запасом (потом обрежем по символам)
+    const rows = await this.db
+      .select()
+      .from(bufferedMessages)
+      .where(
+        and(
+          eq(bufferedMessages.chatId, chatId),
+          gte(bufferedMessages.tsMs, fromTsMs),
+          lte(bufferedMessages.tsMs, toTsMs),
+        ),
+      )
+      .orderBy(desc(bufferedMessages.tsMs))
+      .limit(2000);
+
+    // Обрезаем по maxChars, сохраняя “свежие” сообщения
+    let used = 0;
+    const picked: any[] = [];
+    for (const r of rows) {
+      const t = String(r.text ?? '');
+      if (!t) continue;
+
+      if (used + t.length > maxChars) break;
+      used += t.length;
+
+      picked.push({
+        bufferId: r.id,
+        chatId: r.chatId,
+        userId: r.userId ?? null,
+        messageId: r.messageId,
+        text: t,
+        ts: Number(r.tsMs),
+      });
+    }
+
+    // Вернём по возрастанию времени (чтобы LLM видел “как разговор”)
+    picked.sort((a, b) => a.ts - b.ts);
+    return picked;
+  }
+
+  async getLastByChars(params: {
+    chatId: string;
+    maxChars: number;
+    maxRows?: number;
+  }) {
+    const { chatId, maxChars, maxRows = 2000 } = params;
+
+    const rows = await this.db
+      .select()
+      .from(bufferedMessages)
+      .where(eq(bufferedMessages.chatId, chatId))
+      .orderBy(desc(bufferedMessages.tsMs))
+      .limit(maxRows);
+
+    let used = 0;
+    const picked: any[] = [];
+
+    for (const r of rows) {
+      const t = String(r.text ?? '');
+      if (!t) continue;
+
+      if (used + t.length > maxChars) break;
+      used += t.length;
+
+      picked.push({
+        bufferId: r.id,
+        chatId: r.chatId,
+        userId: r.userId ?? null,
+        messageId: r.messageId,
+        text: t,
+        ts: Number(r.tsMs),
+      });
+    }
+
+    picked.sort((a, b) => a.ts - b.ts);
+    return picked;
   }
 }

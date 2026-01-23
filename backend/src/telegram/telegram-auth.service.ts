@@ -1,45 +1,38 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import * as crypto from 'crypto';
+import { Injectable } from '@nestjs/common';
+import { createHmac } from 'crypto';
 
 @Injectable()
 export class TelegramAuthService {
-  verifyAndIssueToken(initData: string) {
-    if (!initData) throw new UnauthorizedException('Missing initData');
+  verify(initData: string): {
+    telegramUser: {
+      id: number;
+      username?: string;
+    };
+  } {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    if (!hash) throw new Error('No hash');
 
-    const urlParams = new URLSearchParams(initData);
-    const hash = urlParams.get('hash');
-    if (!hash) throw new UnauthorizedException('Missing hash');
+    params.delete('hash');
 
-    urlParams.delete('hash');
-
-    const dataCheckString = Array.from(urlParams.entries())
+    const dataCheckString = Array.from(params.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join('\n');
 
-    const botToken = process.env.TELEGRAM_BOT_TOKEN;
-    if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not set');
-
-    // ✅ Mini Apps secret key:
-    // secret_key = HMAC_SHA256(key="WebAppData", msg=bot_token)
-    const secretKey = crypto
-      .createHmac('sha256', 'WebAppData')
-      .update(botToken)
+    const secret = createHmac('sha256', 'WebAppData')
+      .update(process.env.TELEGRAM_BOT_TOKEN!)
       .digest();
 
-    const computedHash = crypto
-      .createHmac('sha256', secretKey)
+    const calculatedHash = createHmac('sha256', secret)
       .update(dataCheckString)
       .digest('hex');
 
-    if (computedHash !== hash) {
-      throw new UnauthorizedException('Invalid Telegram initData signature');
+    if (calculatedHash !== hash) {
+      throw new Error('Invalid Telegram signature');
     }
 
-    const userRaw = urlParams.get('user');
-    const user = userRaw ? JSON.parse(userRaw) : null;
-
-    return { ok: true, telegramUser: user };
+    const user = JSON.parse(params.get('user')!);
+    return { telegramUser: user };
   }
 }
-

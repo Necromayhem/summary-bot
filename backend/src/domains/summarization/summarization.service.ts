@@ -1,188 +1,129 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-
 import { DB } from 'src/database/database.module';
 
-import type { MessageBufferPort } from 'src/domains/ingestion/message-buffer.port';
+import type {
+  MessageBufferPort,
+  BufferedMessage,
+} from 'src/domains/ingestion/message-buffer.port';
 import { MESSAGE_BUFFER } from 'src/domains/ingestion/message-buffer.token';
 
 import type { LlmPort } from './llm.port';
 import { LLM } from './summarization.token';
 
+import {
+  DIGEST_QUEUE,
+  DIGEST_JOB,
+  DigestJobPayload,
+  DigestMode,
+} from './digest.queue';
+
 @Injectable()
 export class SummarizationService {
   private readonly logger = new Logger(SummarizationService.name);
-  private readonly limit = Number(process.env.SUMMARIZATION_LIMIT ?? 10);
 
   constructor(
     @Inject(DB) private readonly db: NodePgDatabase,
     @Inject(MESSAGE_BUFFER) private readonly buffer: MessageBufferPort,
     @Inject(LLM) private readonly llm: LlmPort,
+    @InjectQueue(DIGEST_QUEUE)
+    private readonly digestQueue: Queue<DigestJobPayload>,
   ) {}
 
-  /**
-   * Called by ingestion after each message append.
-   * Creates a job only when buffer size >= limit AND no active job exists.
-   */
-  async maybeEnqueue(chatId: string): Promise<void> {
-    const startedAt = Date.now();
-    this.logger.log(`maybeEnqueue:start chatId=${chatId}`);
+  async enqueueDigest(params: {
+    chatId: string;
+    mode: DigestMode;
+    requestedByUserId: string;
+  }) {
+    await this.digestQueue.add(DIGEST_JOB, params, {
+      removeOnComplete: 1000,
+      removeOnFail: 5000,
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 1000 },
+    });
 
-    try {
-      const cnt = await this.buffer.count(chatId);
-      this.logger.log(`maybeEnqueue:count chatId=${chatId} cnt=${cnt}`);
+    this.logger.log(
+      `digest enqueued chatId=${params.chatId} mode=${params.mode} user=${params.requestedByUserId}`,
+    );
 
-      if (cnt < this.limit) {
-        this.logger.log(
-          `maybeEnqueue:skip chatId=${chatId} reason=cnt<limit limit=${this.limit}`,
-        );
-        return;
-      }
-
-      // Prevent duplicate jobs for same chat
-      const active = await this.db.execute(sql<{ id: number }>`
-        SELECT id
-        FROM summarization_jobs
-        WHERE chat_id = ${chatId}
-          AND status IN ('pending', 'running')
-        LIMIT 1;
-      `);
-
-      if (active.rows.length > 0) {
-        this.logger.log(
-          `maybeEnqueue:skip chatId=${chatId} reason=active_job jobId=${active.rows[0].id}`,
-        );
-        return;
-      }
-
-      await this.db.execute(sql`
-        INSERT INTO summarization_jobs (chat_id, status, attempts, last_error, created_at, locked_at)
-        VALUES (${chatId}, 'pending', 0, NULL, NOW(), NULL);
-      `);
-
-      this.logger.log(
-        `maybeEnqueue:enqueued chatId=${chatId} ms=${Date.now() - startedAt}`,
-      );
-    } catch (e: any) {
-      this.logger.error(
-        `maybeEnqueue:error chatId=${chatId} msg=${String(e?.message ?? e)}`,
-        e?.stack,
-      );
-      // ingestion пусть решает, глотать или падать; я бы не валил ingestion из-за enqueue
-    }
+    return { ok: true };
   }
 
-  /**
-   * Called by worker after it atomically marks job as running.
-   */
-  async runJob(jobId: number): Promise<void> {
-    const startedAt = Date.now();
-    this.logger.log(`runJob:start jobId=${jobId}`);
+  async runDigest(params: {
+    chatId: string;
+    mode: DigestMode;
+  }): Promise<string> {
+    const { chatId, mode } = params;
 
-    // 1) load job
-    const jobRes = await this.db.execute(sql<{
-      id: number;
-      chat_id: string;
-      status: string;
-      attempts: number;
-      locked_at: string | null;
-    }>`
-      SELECT id, chat_id, status, attempts, locked_at
-      FROM summarization_jobs
-      WHERE id = ${jobId}
-      LIMIT 1;
-    `);
+    const now = Date.now();
+    const maxChars = 10_000;
 
-    const job = jobRes.rows?.[0];
-    if (!job) {
-      this.logger.warn(`runJob:job not found jobId=${jobId}`);
-      return;
+    let messages: BufferedMessage[] = [];
+    let title = '';
+
+    if (mode === '12h' || mode === '24h') {
+      const periodHours = mode === '12h' ? 12 : 24;
+      const fromTsMs = now - periodHours * 60 * 60 * 1000;
+
+      messages = await this.buffer.getForPeriod({
+        chatId,
+        fromTsMs,
+        toTsMs: now,
+        maxChars,
+      });
+
+      title = `Дайджест за последние ${periodHours}ч`;
+    } else {
+      // ✅ last10k
+      messages = await this.buffer.getLastByChars({
+        chatId,
+        maxChars,
+        maxRows: 2000,
+      });
+
+      title = `Дайджест по последним 10\u00A0000 символам`;
     }
 
-    const chatId = String(job.chat_id);
+    if (messages.length === 0) return `Нет сообщений для дайджеста.`;
 
-    try {
-      // 2) read batch from buffer
-      const batch = await this.buffer.getBatch(chatId, this.limit);
-      this.logger.log(
-        `runJob:batch chatId=${chatId} size=${batch.length} limit=${this.limit}`,
-      );
+    const allText = messages.map((m) => m.text).join('\n');
+    const urls = extractUrls(allText);
 
-      if (batch.length === 0) {
-        // nothing to do; mark done to avoid infinite running
-        await this.db.execute(sql`
-          UPDATE summarization_jobs
-          SET status = 'done',
-              locked_at = NULL,
-              last_error = NULL
-          WHERE id = ${jobId};
-        `);
-        this.logger.warn(`runJob:empty batch -> done jobId=${jobId}`);
-        return;
-      }
+    const instruction = buildDigestInstruction(title, urls);
 
-      const fromTs = Math.min(...batch.map((m) => m.ts));
-      const toTs = Math.max(...batch.map((m) => m.ts));
-      const maxBufferId = Math.max(...batch.map((m) => m.bufferId));
+    const syntheticPromptMessage: BufferedMessage = {
+      bufferId: 0,
+      chatId,
+      userId: null,
+      messageId: 'prompt',
+      text: instruction,
+      ts: now,
+    };
 
-      this.logger.log(
-        `runJob:llm:start jobId=${jobId} chatId=${chatId} fromTs=${fromTs} toTs=${toTs} maxBufferId=${maxBufferId}`,
-      );
+    const input = [syntheticPromptMessage, ...messages];
 
-      // 3) call LLM
-      const summary = await this.llm.summarize(chatId, batch);
+    this.logger.log(
+      `digest llm:start chatId=${chatId} mode=${mode} msgs=${messages.length}`,
+    );
+    const summaryHtml = await this.llm.summarize(chatId, input);
+    this.logger.log(
+      `digest llm:done chatId=${chatId} outLen=${summaryHtml.length}`,
+    );
 
-      this.logger.log(
-        `runJob:llm:done jobId=${jobId} chatId=${chatId} summaryLen=${summary.length}`,
-      );
+    // сохраняем (если таблица есть)
+    await this.db.execute(sql`
+    INSERT INTO conversation_summaries (chat_id, from_ts_ms, to_ts_ms, summary, created_at)
+    VALUES (${chatId}, ${now - 1}, ${now}, ${summaryHtml}, NOW());
+  `);
 
-      // 4) write summary
-      await this.db.execute(sql`
-        INSERT INTO conversation_summaries (chat_id, from_ts_ms, to_ts_ms, summary, created_at)
-        VALUES (${chatId}, ${fromTs}, ${toTs}, ${summary}, NOW());
-      `);
-
-      // 5) clear processed messages
-      await this.buffer.clearUpTo(chatId, maxBufferId);
-
-      // 6) mark done
-      await this.db.execute(sql`
-        UPDATE summarization_jobs
-        SET status = 'done',
-            locked_at = NULL,
-            last_error = NULL
-        WHERE id = ${jobId};
-      `);
-
-      this.logger.log(
-        `runJob:done jobId=${jobId} chatId=${chatId} ms=${Date.now() - startedAt}`,
-      );
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-
-      this.logger.error(
-        `runJob:failed jobId=${jobId} chatId=${chatId} ms=${Date.now() - startedAt} err=${msg}`,
-        e?.stack,
-      );
-
-      // IMPORTANT: unlock + fail, so it doesn't get stuck at running
-      await this.db.execute(sql`
-        UPDATE summarization_jobs
-        SET status = 'failed',
-            locked_at = NULL,
-            last_error = ${msg}
-        WHERE id = ${jobId};
-      `);
-
-      // пробрасываем, чтобы воркер тоже видел ошибку в логах
-      throw e;
-    }
+    return summaryHtml;
   }
 
-  /**
-   * Read API: get the latest summary for chatId from Postgres.
-   */
+  // Оставим полезный API для UI: “последний summary”
   async getLatestSummary(chatId: string): Promise<{
     chatId: string;
     summary: string;
@@ -217,3 +158,29 @@ export class SummarizationService {
   }
 }
 
+// ===== helpers =====
+
+function extractUrls(text: string): string[] {
+  const re = /\bhttps?:\/\/[^\s<>()]+/gi;
+  const found = text.match(re) ?? [];
+  return Array.from(new Set(found)).slice(0, 50);
+}
+
+function buildDigestInstruction(title: string, urls: string[]) {
+  const urlHint = urls.length
+    ? `\n\nURL из чата (используй только их):\n${urls.map((u) => `- ${u}`).join('\n')}`
+    : `\n\nВ сообщениях не найдено URL.`;
+
+  return [
+    `Ты делаешь: ${title}.`,
+    `Ограничения: входной текст не больше 10k символов.`,
+    `Сделай один связный summary-текст (без воды), максимум ~2000 слов.`,
+    `В конце добавь блок: <b>Ключевые события и ссылки</b> (5–10 пунктов).`,
+    `Если событие связано со ссылкой, вставь кликабельную HTML-ссылку: <a href="URL">короткое название</a>.`,
+    `НЕ выдумывай ссылки. Используй только URL из списка ниже.`,
+    `Формат ответа: HTML (Telegram parse_mode=HTML).`,
+    urlHint,
+    ``,
+    `Ниже идут сообщения:`,
+  ].join('\n');
+}

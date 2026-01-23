@@ -3,10 +3,9 @@ import { IngestionService } from './ingestion.service';
 import { MESSAGE_BUFFER } from './message-buffer.token';
 import { PostgresMessageBuffer } from '../../infrastructure/database/postgres/postgres-message-buffer';
 import { DatabaseModule } from 'src/database/database.module';
-import { SummarizationModule } from '../summarization/summarization.module';
 
 @Module({
-  imports: [DatabaseModule, SummarizationModule],
+  imports: [DatabaseModule],
   providers: [
     IngestionService,
     { provide: MESSAGE_BUFFER, useClass: PostgresMessageBuffer },
@@ -14,3 +13,4 @@ import { SummarizationModule } from '../summarization/summarization.module';
   exports: [IngestionService],
 })
 export class IngestionModule {}
+

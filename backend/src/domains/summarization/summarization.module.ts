@@ -1,28 +1,48 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
+
 import { DatabaseModule } from 'src/database/database.module';
+import { TelegramAuthModule } from 'src/telegram/telegram-auth.module';
 
 import { SummarizationService } from './summarization.service';
-import { SummarizationWorker } from './summarization.worker';
+import { SummarizationController } from './summarization.controller';
+
+import { DigestController } from './digest.controller';
+import { DigestProcessor } from './digest.processor';
+import { DIGEST_QUEUE } from './digest.queue';
 
 import { MESSAGE_BUFFER } from '../ingestion/message-buffer.token';
 import { PostgresMessageBuffer } from 'src/infrastructure/database/postgres/postgres-message-buffer';
 
-import { LLM } from '../summarization/summarization.token';
-// временная заглушка — заменишь на реальный openai-gateway
+import { LLM } from './summarization.token';
 import { OpenAiLlm } from '../../infrastructure/llm/openai-llm';
-import { SummarizationController } from './summarization.controller';
 
 @Module({
-  imports: [DatabaseModule],
-  controllers: [SummarizationController],
+  imports: [
+    DatabaseModule,
+    ConfigModule,
+    TelegramAuthModule,
+
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        connection: {
+          host: cfg.getOrThrow('REDIS_HOST'),
+          port: Number(cfg.getOrThrow('REDIS_PORT')),
+          password: cfg.get('REDIS_PASSWORD') || undefined,
+        },
+      }),
+    }),
+
+    BullModule.registerQueue({ name: DIGEST_QUEUE }),
+  ],
+  controllers: [SummarizationController, DigestController],
   providers: [
     SummarizationService,
-    SummarizationWorker,
+    DigestProcessor,
 
-    // буфер
     { provide: MESSAGE_BUFFER, useClass: PostgresMessageBuffer },
-
-    // llm
     { provide: LLM, useClass: OpenAiLlm },
   ],
   exports: [SummarizationService],
