@@ -6,6 +6,8 @@ import { TelegramModule } from './telegram/telegram.module';
 import { SummarizationModule } from './domains/summarization/summarization.module';
 import { JwtStrategy } from './auth/jwt.strategy';
 import { JwtGlobalModule } from './auth/jwt-global.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 
 @Module({
   imports: [
@@ -18,6 +20,7 @@ import { JwtGlobalModule } from './auth/jwt-global.module';
     TelegramModule,
     SummarizationModule,
   ],
-  providers: [JwtStrategy],
+  providers: [JwtStrategy, AppService],
+  controllers: [AppController],
 })
 export class AppModule {}
