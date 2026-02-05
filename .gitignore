@@ -13,5 +13,4 @@ npm-debug.log
 pnpm-debug.log
 .pnpm-store
 .DS_Store
-Dockerfile
 .dockerignore
