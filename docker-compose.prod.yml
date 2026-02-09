@@ -44,7 +44,7 @@ services:
       - "5173:5173"
 
   migrate:
-    image: yourdockerhub/summary-bot-backend:latest
+    image: alexkuklev835/summary-bot-backend:latest
     restart: "no"
     env_file:
       - .env
